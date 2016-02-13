@@ -45,11 +45,15 @@ static void parse_args(int argc, char** argv);
 
 struct fstab *fstab;
 
+#ifdef MINIVOLD
+extern struct selabel_handle *sehandle;
+#else
 struct selabel_handle *sehandle;
+#endif
 
 using android::base::StringPrintf;
 
-int main(int argc, char** argv) {
+extern "C" int vold_main(int argc, char** argv) {
     setenv("ANDROID_LOG_TAGS", "*:v", 1);
     android::base::InitLogging(argv, android::base::LogdLogger(android::base::SYSTEM));
 

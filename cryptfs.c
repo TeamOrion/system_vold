@@ -104,6 +104,11 @@ static struct crypt_persist_data *persist_data = NULL;
 
 static int previous_type;
 
+#ifdef MINIVOLD
+inline int release_wake_lock(const char* id) { return 0; }
+inline int acquire_wake_lock(int lock, const char* id) { return 0; }
+#endif
+
 #ifdef CONFIG_HW_DISK_ENCRYPTION
 static int scrypt_keymaster(const char *passwd, const unsigned char *salt,
                             unsigned char *ikey, void *params);
@@ -221,6 +226,7 @@ out:
 }
 #endif
 
+#ifndef MINIVOLD // no HALs in recovery...
 static int keymaster_init(keymaster0_device_t **keymaster0_dev,
                           keymaster1_device_t **keymaster1_dev)
 {
@@ -259,10 +265,14 @@ err:
     *keymaster1_dev = NULL;
     return rc;
 }
+#endif
 
 /* Should we use keymaster? */
 static int keymaster_check_compatibility()
 {
+#ifdef MINIVOLD
+    return -1;
+#else
     keymaster0_device_t *keymaster0_dev = 0;
     keymaster1_device_t *keymaster1_dev = 0;
     int rc = 0;
@@ -299,11 +309,15 @@ out:
         keymaster0_close(keymaster0_dev);
     }
     return rc;
+#endif
 }
 
 /* Create a new keymaster key and store it in this footer */
 static int keymaster_create_key(struct crypt_mnt_ftr *ftr)
 {
+#ifdef MINIVOLD // no HALs in recovery...
+    return -1;
+#else
     uint8_t* key = 0;
     keymaster0_device_t *keymaster0_dev = 0;
     keymaster1_device_t *keymaster1_dev = 0;
@@ -386,6 +400,7 @@ out:
         keymaster1_close(keymaster1_dev);
     free(key);
     return rc;
+#endif
 }
 
 /* This signs the given object using the keymaster key. */
@@ -395,6 +410,9 @@ static int keymaster_sign_object(struct crypt_mnt_ftr *ftr,
                                  unsigned char **signature,
                                  size_t *signature_size)
 {
+#ifdef MINIVOLD // no HALs in recovery...
+    return -1;
+#else
     int rc = 0;
     keymaster0_device_t *keymaster0_dev = 0;
     keymaster1_device_t *keymaster1_dev = 0;
@@ -520,6 +538,7 @@ static int keymaster_sign_object(struct crypt_mnt_ftr *ftr,
             keymaster0_close(keymaster0_dev);
 
         return rc;
+#endif
 }
 
 /* Store password when userdata is successfully decrypted and mounted.

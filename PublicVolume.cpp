@@ -37,12 +37,16 @@ using android::base::StringPrintf;
 namespace android {
 namespace vold {
 
+#ifdef MINIVOLD
+static const char* kFusePath = "/sbin/sdcard";
+#else
 static const char* kFusePath = "/system/bin/sdcard";
+#endif
 
 static const char* kAsecPath = "/mnt/secure/asec";
 
-PublicVolume::PublicVolume(dev_t device) :
-        VolumeBase(Type::kPublic), mDevice(device), mFusePid(0) {
+PublicVolume::PublicVolume(dev_t device, const std::string& nickname) :
+        VolumeBase(Type::kPublic), mDevice(device), mFusePid(0), mFsLabel(nickname) {
     setId(StringPrintf("public:%u,%u", major(device), minor(device)));
     mDevPath = StringPrintf("/dev/block/vold/%s", getId().c_str());
 }
@@ -83,6 +87,9 @@ status_t PublicVolume::initAsecStage() {
 }
 
 status_t PublicVolume::doCreate() {
+    if (mFsLabel.size() > 0) {
+        notifyEvent(ResponseCode::VolumeFsLabelChanged, mFsLabel);
+    }
     return CreateDeviceNode(mDevPath, mDevice);
 }
 
@@ -104,17 +111,26 @@ status_t PublicVolume::doMount() {
         return -EIO;
     }
 
-    // Use UUID as stable name, if available
+    // Use volume label and otherwise UUID as stable name, if available
     std::string stableName = getId();
-    if (!mFsUuid.empty()) {
+    if (!mFsLabel.empty()) {
+        stableName = mFsLabel;
+    } else if (!mFsUuid.empty()) {
         stableName = mFsUuid;
     }
 
+#ifdef MINIVOLD
+    // In recovery, directly mount to /storage/* since we have no fuse daemon
+    mRawPath = StringPrintf("/storage/%s", stableName.c_str());
+    mFuseDefault = StringPrintf("/storage/%s", stableName.c_str());
+    mFuseRead = StringPrintf("/storage/%s", stableName.c_str());
+    mFuseWrite = StringPrintf("/storage/%s", stableName.c_str());
+#else
     mRawPath = StringPrintf("/mnt/media_rw/%s", stableName.c_str());
-
     mFuseDefault = StringPrintf("/mnt/runtime/default/%s", stableName.c_str());
     mFuseRead = StringPrintf("/mnt/runtime/read/%s", stableName.c_str());
     mFuseWrite = StringPrintf("/mnt/runtime/write/%s", stableName.c_str());
+#endif
 
     setInternalPath(mRawPath);
     if (getMountFlags() & MountFlags::kVisible) {
@@ -137,6 +153,11 @@ status_t PublicVolume::doMount() {
         return -EIO;
     }
 
+#ifdef MINIVOLD
+    // In recovery, don't setup ASEC or FUSE
+    return OK;
+#endif
+
     if (getMountFlags() & MountFlags::kPrimary) {
         initAsecStage();
     }
@@ -149,27 +170,15 @@ status_t PublicVolume::doMount() {
     dev_t before = GetDevice(mFuseWrite);
 
     if (!(mFusePid = fork())) {
-        if (getMountFlags() & MountFlags::kPrimary) {
-            if (execl(kFusePath, kFusePath,
-                    "-u", "1023", // AID_MEDIA_RW
-                    "-g", "1023", // AID_MEDIA_RW
-                    "-U", std::to_string(getMountUserId()).c_str(),
-                    "-w",
-                    mRawPath.c_str(),
-                    stableName.c_str(),
-                    NULL)) {
-                PLOG(ERROR) << "Failed to exec";
-            }
-        } else {
-            if (execl(kFusePath, kFusePath,
-                    "-u", "1023", // AID_MEDIA_RW
-                    "-g", "1023", // AID_MEDIA_RW
-                    "-U", std::to_string(getMountUserId()).c_str(),
-                    mRawPath.c_str(),
-                    stableName.c_str(),
-                    NULL)) {
-                PLOG(ERROR) << "Failed to exec";
-            }
+        if (execl(kFusePath, kFusePath,
+                  "-u", "1023", // AID_MEDIA_RW
+                  "-g", "1023", // AID_MEDIA_RW
+                  "-U", std::to_string(getMountUserId()).c_str(),
+                  "-w",
+                  mRawPath.c_str(),
+                  stableName.c_str(),
+                  NULL)) {
+            PLOG(ERROR) << "Failed to exec";
         }
 
         LOG(ERROR) << "FUSE exiting";
@@ -189,7 +198,7 @@ status_t PublicVolume::doMount() {
     return OK;
 }
 
-status_t PublicVolume::doUnmount() {
+status_t PublicVolume::doUnmount(bool detach /* = false */) {
     if (mFusePid > 0) {
         kill(mFusePid, SIGTERM);
         TEMP_FAILURE_RETRY(waitpid(mFusePid, nullptr, 0));
@@ -201,7 +210,7 @@ status_t PublicVolume::doUnmount() {
     ForceUnmount(mFuseDefault);
     ForceUnmount(mFuseRead);
     ForceUnmount(mFuseWrite);
-    ForceUnmount(mRawPath);
+    ForceUnmount(mRawPath, detach);
 
     rmdir(mFuseDefault.c_str());
     rmdir(mFuseRead.c_str());

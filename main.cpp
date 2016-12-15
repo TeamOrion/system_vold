@@ -17,7 +17,9 @@
 #include "Disk.h"
 #include "VolumeManager.h"
 #include "CommandListener.h"
+#ifndef MINIVOLD
 #include "CryptCommandListener.h"
+#endif
 #include "NetlinkManager.h"
 #include "cryptfs.h"
 #include "sehandle.h"
@@ -45,24 +47,32 @@ static void parse_args(int argc, char** argv);
 
 struct fstab *fstab;
 
+#ifdef MINIVOLD
+extern struct selabel_handle *sehandle;
+#else
 struct selabel_handle *sehandle;
+#endif
 
 using android::base::StringPrintf;
 
-int main(int argc, char** argv) {
+extern "C" int vold_main(int argc, char** argv) {
     setenv("ANDROID_LOG_TAGS", "*:v", 1);
     android::base::InitLogging(argv, android::base::LogdLogger(android::base::SYSTEM));
 
     LOG(INFO) << "Vold 3.0 (the awakening) firing up";
 
     LOG(VERBOSE) << "Detected support for:"
+            << (android::vold::IsFilesystemSupported("exfat") ? " exfat" : "")
             << (android::vold::IsFilesystemSupported("ext4") ? " ext4" : "")
             << (android::vold::IsFilesystemSupported("f2fs") ? " f2fs" : "")
+            << (android::vold::IsFilesystemSupported("ntfs") ? " ntfs" : "")
             << (android::vold::IsFilesystemSupported("vfat") ? " vfat" : "");
 
     VolumeManager *vm;
     CommandListener *cl;
+#ifndef MINIVOLD
     CryptCommandListener *ccl;
+#endif
     NetlinkManager *nm;
 
     parse_args(argc, argv);
@@ -97,7 +107,9 @@ int main(int argc, char** argv) {
     }
 
     cl = new CommandListener();
+#ifndef MINIVOLD
     ccl = new CryptCommandListener();
+#endif
     vm->setBroadcaster((SocketListener *) cl);
     nm->setBroadcaster((SocketListener *) cl);
 
@@ -126,10 +138,12 @@ int main(int argc, char** argv) {
         exit(1);
     }
 
+#ifndef MINIVOLD
     if (ccl->startListener()) {
         PLOG(ERROR) << "Unable to start CryptCommandListener";
         exit(1);
     }
+#endif
 
     // Eventually we'll become the monitoring thread
     while(1) {
@@ -219,13 +233,17 @@ static int process_config(VolumeManager *vm) {
     bool has_adoptable = false;
     for (int i = 0; i < fstab->num_entries; i++) {
         if (fs_mgr_is_voldmanaged(&fstab->recs[i])) {
-            if (fs_mgr_is_nonremovable(&fstab->recs[i])) {
-                LOG(WARNING) << "nonremovable no longer supported; ignoring volume";
-                continue;
-            }
-
             std::string sysPattern(fstab->recs[i].blk_device);
+            std::string fstype;
+            if (fstab->recs[i].fs_type) {
+                fstype = fstab->recs[i].fs_type;
+            }
+            std::string mntopts;
+            if (fstab->recs[i].fs_options) {
+                mntopts = fstab->recs[i].fs_options;
+            }
             std::string nickname(fstab->recs[i].label);
+            int partnum = fstab->recs[i].partnum;
             int flags = 0;
 
             if (fs_mgr_is_encryptable(&fstab->recs[i])) {
@@ -236,9 +254,13 @@ static int process_config(VolumeManager *vm) {
                     || property_get_bool("vold.debug.default_primary", false)) {
                 flags |= android::vold::Disk::Flags::kDefaultPrimary;
             }
+            if (fs_mgr_is_nonremovable(&fstab->recs[i])) {
+                flags |= android::vold::Disk::Flags::kNonRemovable;
+            }
 
             vm->addDiskSource(std::shared_ptr<VolumeManager::DiskSource>(
-                    new VolumeManager::DiskSource(sysPattern, nickname, flags)));
+                    new VolumeManager::DiskSource(sysPattern, nickname, partnum, flags,
+                                    fstype, mntopts)));
         }
     }
     property_set("vold.has_adoptable", has_adoptable ? "1" : "0");

@@ -21,6 +21,9 @@
 #include <android-base/file.h>
 #include <android-base/logging.h>
 #include <android-base/stringprintf.h>
+#include "fs/Exfat.h"
+#include "fs/Ntfs.h"
+
 #include <cutils/fs.h>
 #include <cutils/properties.h>
 #include <private/android_filesystem_config.h>
@@ -52,7 +55,11 @@ security_context_t sBlkidUntrustedContext = nullptr;
 security_context_t sFsckContext = nullptr;
 security_context_t sFsckUntrustedContext = nullptr;
 
+#ifdef MINIVOLD
+#include <blkid/blkid.h>
+#else
 static const char* kBlkidPath = "/system/bin/blkid";
+#endif
 static const char* kKeyPath = "/data/misc/vold";
 
 static const char* kProcFilesystems = "/proc/filesystems";
@@ -118,8 +125,15 @@ status_t PrepareDir(const std::string& path, mode_t mode, uid_t uid, gid_t gid) 
     }
 }
 
-status_t ForceUnmount(const std::string& path) {
+status_t ForceUnmount(const std::string& path, bool detach /* = false */) {
     const char* cpath = path.c_str();
+    if (detach) {
+        if (!umount2(path.c_str(), UMOUNT_NOFOLLOW | MNT_DETACH) || errno == EINVAL || errno == ENOENT) {
+            return OK;
+        }
+        PLOG(WARNING) << "Failed to unmount " << path;
+        return -errno;
+    }
     if (!umount2(cpath, UMOUNT_NOFOLLOW) || errno == EINVAL || errno == ENOENT) {
         return OK;
     }
@@ -184,10 +198,21 @@ status_t BindMount(const std::string& source, const std::string& target) {
 
 static status_t readMetadata(const std::string& path, std::string& fsType,
         std::string& fsUuid, std::string& fsLabel, bool untrusted) {
-    fsType.clear();
-    fsUuid.clear();
-    fsLabel.clear();
-
+#ifdef MINIVOLD
+    char *val = NULL;
+    val = blkid_get_tag_value(NULL, "TYPE", path.c_str());
+    if (val) {
+        fsType = val;
+    }
+    val = blkid_get_tag_value(NULL, "UUID", path.c_str());
+    if (val) {
+        fsUuid = val;
+    }
+    val = blkid_get_tag_value(NULL, "LABEL", path.c_str());
+    if (val) {
+        fsUuid = val;
+    }
+#else
     std::vector<std::string> cmd;
     cmd.push_back(kBlkidPath);
     cmd.push_back("-c");
@@ -226,6 +251,7 @@ static status_t readMetadata(const std::string& path, std::string& fsType,
             fsLabel = value;
         }
     }
+#endif
 
     return OK;
 }
@@ -511,6 +537,11 @@ bool IsFilesystemSupported(const std::string& fsType) {
         PLOG(ERROR) << "Failed to read supported filesystems";
         return false;
     }
+
+    /* fuse filesystems */
+    supported.append("fuse\tntfs\n"
+                     "fuse\texfat\n");
+
     return supported.find(fsType + "\n") != std::string::npos;
 }
 

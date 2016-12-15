@@ -161,12 +161,14 @@ std::shared_ptr<VolumeBase> VolumeBase::findVolume(const std::string& id) {
 }
 
 status_t VolumeBase::create() {
-    CHECK(!mCreated);
+    if (mCreated) {
+        return BAD_VALUE;
+    }
 
     mCreated = true;
-    status_t res = doCreate();
     notifyEvent(ResponseCode::VolumeCreated,
             StringPrintf("%d \"%s\" \"%s\"", mType, mDiskId.c_str(), mPartGuid.c_str()));
+    status_t res = doCreate();
     setState(State::kUnmounted);
     return res;
 }
@@ -176,7 +178,9 @@ status_t VolumeBase::doCreate() {
 }
 
 status_t VolumeBase::destroy() {
-    CHECK(mCreated);
+    if (!mCreated) {
+        return NO_INIT;
+    }
 
     if (mState == State::kMounted) {
         unmount();
@@ -212,7 +216,7 @@ status_t VolumeBase::mount() {
     return res;
 }
 
-status_t VolumeBase::unmount() {
+status_t VolumeBase::unmount(bool detach /* = false */) {
     if (mState != State::kMounted) {
         LOG(WARNING) << getId() << " unmount requires state mounted";
         return -EBUSY;
@@ -227,7 +231,7 @@ status_t VolumeBase::unmount() {
     }
     mVolumes.clear();
 
-    status_t res = doUnmount();
+    status_t res = doUnmount(detach);
     setState(State::kUnmounted);
     return res;
 }
